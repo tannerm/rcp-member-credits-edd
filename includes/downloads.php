@@ -25,31 +25,41 @@ class CCCS_Downloads {
 	 * Add Hooks and Actions
 	 */
 	protected function __construct() {
+
+		// Let EDD know we are here
 		add_filter( 'edd_template_paths', array( $this, 'template' ) );
 
+		// use credit for purchase
 		add_action( 'edd_checkout_before_gateway', array( $this, 'use_credit' ), 10, 2 );
 
-		add_filter( 'edd_cart_item_price_label', array( $this, 'credit_price_label' ), 100, 3 );
-		add_filter( 'edd_download_price',        array( $this, 'credit_price_label' ), 100, 3 );
+		// customize button text for credit purchases
 		add_filter( 'edd_purchase_link_args',    array( $this, 'maybe_modify_button' ) );
 
-		// Apply discounts to the checkout
+		// add/remove from cart
 		add_action( 'edd_post_remove_from_cart', array( $this, 'recalculate_credits' ) );
+		add_filter( 'edd_add_to_cart_item',      array( $this, 'item_credit_details' ) );
 
-		add_filter( 'edd_add_to_cart_item', array( $this, 'item_credit_details' ) );
-
+		// calculate price for cart items
 		add_filter( 'edd_cart_item_price',   array( $this, 'item_credit_reset' ), 10, 2 );
 		add_filter( 'edd_get_cart_item_tax', array( $this, 'item_credit_reset' ), 10, 2 );
 
-		add_filter( 'edd_receipt_item_price',  array( $this, 'receipt_item_label' ), 10, 2 );
-		add_filter( 'edd_cart_item',  array( $this, 'cart_item_label' ), 10, 2 );
-		add_filter( 'edd_cart_total', array( $this, 'cart_total_label' ) );
-		add_action( 'edd_payment_receipt_after', array( $this, 'credit_receipt' ), 10, 2 );
+		// pricing labels
+		add_filter( 'edd_cart_total',             array( $this, 'cart_total_label'   ) );
+		add_filter( 'edd_ajax_discount_response', array( $this, 'discount_cart_total_label' ) );
+		add_filter( 'edd_receipt_item_price',     array( $this, 'receipt_item_label' ), 10,  2 );
+		add_filter( 'edd_cart_item',              array( $this, 'cart_item_label'    ), 10,  2 );
+		add_action( 'edd_payment_receipt_after',  array( $this, 'credit_receipt'     ), 10,  2 );
+		add_filter( 'edd_cart_item_price_label',  array( $this, 'credit_price_label' ), 100, 3 );
+		add_filter( 'edd_download_price',         array( $this, 'credit_price_label' ), 100, 3 );
 
-		add_action( 'wp_ajax_edd_add_to_cart',        array( $this, 'ajax_add_to_cart' ), 9 );
-		add_action( 'wp_ajax_nopriv_edd_add_to_cart', array( $this, 'ajax_add_to_cart' ), 9 );
-		add_action( 'wp_ajax_edd_remove_from_cart',        array( $this, 'ajax_remove_from_cart' ) );
-		add_action( 'wp_ajax_nopriv_edd_remove_from_cart', array( $this, 'ajax_remove_from_cart' ) );
+		// custom calculation during ajax calls
+		add_action( 'wp_ajax_edd_add_to_cart',             array( $this, 'ajax_add_to_cart'      ), 9 );
+		add_action( 'wp_ajax_nopriv_edd_add_to_cart',      array( $this, 'ajax_add_to_cart'      ), 9 );
+		add_action( 'wp_ajax_edd_remove_from_cart',        array( $this, 'ajax_remove_from_cart' ), 9 );
+		add_action( 'wp_ajax_nopriv_edd_remove_from_cart', array( $this, 'ajax_remove_from_cart' ), 9 );
+		add_action( 'wp_ajax_edd_remove_discount',         array( $this, 'ajax_remove_discount'  ), 9 );
+		add_action( 'wp_ajax_nopriv_edd_remove_discount',  array( $this, 'ajax_remove_discount'  ), 9 );
+
 	}
 
 	/**
@@ -182,6 +192,11 @@ class CCCS_Downloads {
 		}
 
 		return $total . ' + ' . $this->get_credit_price_label( count( $credits_in_cart ) );
+	}
+
+	public function discount_cart_total_label( $return ) {
+		$return['total'] = $this->cart_total_label( $return['total'] );
+		return $return;
 	}
 
 	/**
@@ -380,6 +395,29 @@ class CCCS_Downloads {
 
 			echo json_encode( $return );
 
+		}
+		edd_die();
+	}
+
+	/**
+	 * Removes a discount code from the cart via ajax
+	 *
+	 * See EDD -> ajax-functions.php line 347
+	 * @return void
+	 */
+	function ajax_remove_discount() {
+		if ( isset( $_POST['code'] ) ) {
+
+			edd_unset_cart_discount( urldecode( $_POST['code'] ) );
+
+			$return = array(
+				'total'     => html_entity_decode( edd_cart_total( false ), ENT_COMPAT, 'UTF-8' ),
+				'code'      => $_POST['code'],
+				'discounts' => edd_get_cart_discounts(),
+				'html'      => edd_get_cart_discounts_html()
+			);
+
+			echo json_encode( $return );
 		}
 		edd_die();
 	}

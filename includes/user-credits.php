@@ -23,6 +23,35 @@ class CCCS_User_Credits {
 	}
 
 	/**
+	 * The dates the credits renew
+	 *
+	 * @return bool|string
+	 */
+	public function get_credit_renewal_date() {
+		$user = get_userdata( $this->user_id );
+
+		$current_month = date( 'n', current_time( 'timestamp' ) );
+		$current_year  = date( 'Y', current_time( 'timestamp' ) );
+		$current_day   = date( 'j', current_time( 'timestamp' ) );
+		$day           = date( 'j', strtotime( $user->user_registered ) );
+
+		// handle all renewals after the 28th on the 1st
+		if ( $day > 28 ) {
+			$day = 1;
+		}
+
+		if ( $current_day >= $day ) {
+			if ( ++ $current_month > 12 ) {
+				$current_month = 1;
+				$current_year ++;
+			}
+		}
+
+		$date = mktime( 01, 00, 00, $current_month, $day, $current_year );
+		return date( get_option( 'date_format', 'F j, Y' ), $date );
+	}
+
+	/**
 	 * Get the total number of credits of this user
 	 *
 	 * @return int
@@ -79,6 +108,13 @@ class CCCS_User_Credits {
 
 		$credits_used = array_merge( $credits_used, $credits );
 		update_user_meta( $this->user_id, self::$_credits_used_key, $credits_used );
+	}
+
+	/**
+	 * remove used credits from user to renew the user's credit count
+	 */
+	public function renew_credits() {
+		delete_user_meta( $this->user_id, self::$_credits_used_key );
 	}
 
 }
@@ -160,3 +196,72 @@ function cccs_use_credit( $credits, $user_id = null ) {
 	$user_credits = new CCCS_User_Credits( $user_id );
 	return $user_credits->use_credit( $credits );
 }
+
+function cccs_user_credit_renewal_date( $user_id = null ) {
+	$user_credits = new CCCS_User_Credits( $user_id );
+	return $user_credits->get_credit_renewal_date();
+}
+
+/**
+ * Reset user credit count
+ *
+ * @param null $user_id
+ */
+function cccs_user_credits_renew( $user_id = null ) {
+	$user_credits = new CCCS_User_Credits( $user_id );
+	$user_credits->renew_credits();
+}
+
+/**
+ * Renew user credits each month based on registration date.
+ *
+ * Runs on cron
+ */
+function cccs_renew_user_credits() {
+
+	$date = date( 'j', current_time( 'timestamp' ) );
+	$day  = array();
+
+	// don't renew on the 29, 30, or 31
+	if ( $date > 28 ) {
+		return;
+	}
+
+	if ( 1 == $date ) {
+		// process 29, 30, 31, and 1 on the 1
+		foreach( array( 29, 30, 31, 1 ) as $extra_day ) {
+			$day[] = array( 'day' => $extra_day );
+		}
+	} else {
+		$day[] = array( 'day' => $date );
+	}
+
+	$day['relation'] = 'OR';
+
+	$users = get_users( array(
+		'fields'     => 'ids',
+		'date_query' => array( $day ),
+	) );
+
+	foreach( $users as $user_id ) {
+		cccs_user_credits_renew( $user_id );
+	}
+
+}
+add_action( 'cccs_renew_credits', 'cccs_renew_user_credits' );
+
+/**
+ * Setup cron for credit renew
+ */
+function cccs_setup_credit_renew_cron() {
+
+	if ( wp_next_scheduled( 'cccs_renew_credits' ) ) {
+		return;
+	}
+
+	$timezone = get_option( 'timezone_string', 'America/Denver' );
+	$time = new DateTime( 'today 3:00:00', new DateTimeZone( $timezone ) );
+
+	wp_schedule_event( $time->getTimestamp(), 'daily', 'cccs_renew_credits' );
+}
+add_action('wp', 'cccs_setup_credit_renew_cron');
