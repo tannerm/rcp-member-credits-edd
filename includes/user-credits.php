@@ -9,6 +9,7 @@ class CCCS_User_Credits {
 	public static $_infinite = 999999;
 
 	private static $_credits_used_key = 'cccs_used_credits';
+	private static $_credits_rollover_key = 'cccs_rollover_credits';
 
 	public function __construct( $user_id = null ) {
 
@@ -52,11 +53,11 @@ class CCCS_User_Credits {
 	}
 
 	/**
-	 * Get the total number of credits of this user
+	 * Get the total number of credits of this user for the current credit/month period
 	 *
 	 * @return int
 	 */
-	public function get_total_credits() {
+	public function get_total_credits( $ignore_rollover = false ) {
 		if ( ! $this->level_id ) {
 			return 0;
 		}
@@ -65,7 +66,15 @@ class CCCS_User_Credits {
 			return 0;
 		}
 
-		return cc_get_credits_per_level( $this->level_id );
+		$credits = cc_get_credits_per_level( $this->level_id );
+
+		if ( ! $ignore_rollover ) {
+			if ( $rollover_credits = $this->get_rollover_credits() ) {
+				$credits += array_sum( (array) $rollover_credits );
+			}
+		}
+
+		return absint( $credits );
 	}
 
 	/**
@@ -78,18 +87,35 @@ class CCCS_User_Credits {
 	public function get_available_credits( $ignore_cart = false ) {
 		$credits = $this->get_total_credits();
 
+		$credits -= $this->get_used_credits( $ignore_cart );
+
+		return $credits;
+	}
+
+	/**
+	 * Get the number of credits this user has used for the current period
+	 * @param bool $ignore_cart
+	 *
+	 * @return array|bool|int|mixed
+	 */
+	public function get_used_credits( $ignore_cart = false ) {
+
 		if ( ! $used_credits = get_user_meta( $this->user_id, self::$_credits_used_key, true ) ) {
+			$used_credits = array();;
+		}
+
+		if ( ! is_array( $used_credits ) ) {
 			$used_credits = array();
 		}
 
-		$credits -= count( $used_credits );
+		$used_credits = count ( $used_credits );
 
 		// don't count credits in the cart
 		if ( ! $ignore_cart ) {
-			$credits -= count( cccs_credits_in_cart() );
+			$used_credits += count( cccs_credits_in_cart() );
 		}
 
-		return $credits;
+		return $used_credits;
 	}
 
 	/**
@@ -111,12 +137,96 @@ class CCCS_User_Credits {
 	}
 
 	/**
+	 * Get the rollover credits for this user
+	 *
+	 * @param null $month
+	 *
+	 * @return array|bool|int|mixed
+	 */
+	public function  get_rollover_credits( $month = null ) {
+		$rollover_credits = get_user_meta( $this->user_id, self::$_credits_rollover_key, true );
+
+		// make sure we have an array
+		if ( ! is_array( $rollover_credits ) ) {
+			return array();
+		}
+
+		// check if we are looking for a month
+		if ( empty( $month ) ) {
+			// remove empty entries
+			return array_filter( $rollover_credits );
+		}
+
+		if ( empty( $rollover_credits[ $month ] ) ) {
+			return 0;
+		}
+
+		return $rollover_credits[ $month ];
+
+	}
+
+	/**
 	 * remove used credits from user to renew the user's credit count
 	 */
 	public function renew_credits() {
+
+		$current_month    = date( 'n', current_time( 'timestamp' ) );
+
+		$rollover_credits = $this->get_rollover_credits();
+		$used_credits     = $this->get_used_credits( true );
+		$monthly_credits  = $this->get_total_credits( true );
+
+		// Count used credits against rollover first, then monthly credits
+		if ( $used_credits ) {
+			$month = $current_month;
+
+			// step through each month, but don't use $i, we need to calculate from oldest to newest
+			for ( $i = 1; $i <= 12; $i ++ ) {
+
+				if ( ! empty( $rollover_credits[ $month ] ) ) {
+
+					// get the number of credits we can use from this month and apply toward the used credits
+					$credits = min( $used_credits, $rollover_credits[ $month ] );
+
+					$rollover_credits[ $month ] -= $credits;
+					$used_credits -= $credits;
+
+				}
+
+				if ( empty( $used_credits ) ) {
+					break;
+				}
+
+				// calculate for end of year.
+				if ( ++ $month > 12 ) {
+					$month = 1;
+				}
+
+			}
+
+		}
+
+		// Update rollover credits for this month with any unused monthly credits,
+		// overwriting last year's value
+		$rollover_credits[ $current_month ] = max( 0, $monthly_credits - $used_credits );
+
+		update_user_meta( $this->user_id, self::$_credits_rollover_key, array_filter( $rollover_credits ) );
 		delete_user_meta( $this->user_id, self::$_credits_used_key );
 	}
 
+}
+
+/**
+ * Get the rollover credits for this user for the specified month
+ *
+ * @param null $user_id
+ * @param null $month
+ *
+ * @return array|bool|int|mixed
+ */
+function cccs_get_rollover_credits( $user_id = null, $month = null ) {
+	$credits = new CCCS_User_Credits( $user_id );
+	return $credits->get_rollover_credits( $month );
 }
 
 /**
@@ -249,6 +359,7 @@ function cccs_renew_user_credits() {
 
 }
 add_action( 'cccs_renew_credits', 'cccs_renew_user_credits' );
+//add_action( 'wp', 'cccs_renew_user_credits' );
 
 /**
  * Setup cron for credit renew
@@ -264,4 +375,4 @@ function cccs_setup_credit_renew_cron() {
 
 	wp_schedule_event( $time->getTimestamp(), 'daily', 'cccs_renew_credits' );
 }
-add_action('wp', 'cccs_setup_credit_renew_cron');
+add_action( 'wp', 'cccs_setup_credit_renew_cron' );
